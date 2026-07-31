@@ -1,0 +1,78 @@
+%% Testaillaan julkaistavaa koodia
+cd C:\Users\kumppari\Documents\Work\Papers\2020\Turre2\Code2pub
+
+% Load data
+load('..\DogMoveData')
+
+
+%% Calculate features
+WLen = 200; % Window 2 sec
+Necdf = 7; % Interpolation points for ecdf
+overlap = 50; % overlap 50%
+Features = CalcFeatures_Acc_Gyro(DogMoveData, WLen, overlap, Necdf);
+
+% save CalculatedFeatures Features
+
+%% Collect and arrange Features into matrices in variable Xd
+% load CalculatedFeatures 
+SensNames = {'Back' 'Neck'};
+
+[Xd, Class, Fnames, DogID, TestNum] = CollectFeatures(Features, SensNames);
+
+
+%% Rank features with relieff algorithm, and KNN
+
+% Testin following k values for KNN 
+k = [3 5 9 13 17 21];
+
+% td{1} = Xd{1}(1:20:end,:);
+% td{2} = Xd{2}(1:20:end,:);
+% 
+% [ranks, weights, k, kRanks, kweights] = RankFeatures(td, SensNames, Class(1:10:end), k);
+
+[ranks, weights, k, kRanks, kweights] = RankFeatures(Xd, SensNames, Class, k);
+
+minVars = 20; % Using max 20 variables 
+for iS = 1:numel(SensNames) 
+    SeNa = SensNames{iS};
+    reliefVars{iS} = unique(kRanks.(SeNa)(:,1:minVars));
+end
+
+% save Rankings ranks weights k kRanks kweights
+
+%% Feature selection for LDA, QDA and SVM
+% load Rankings
+
+% Crossvalidation partition, Leave one dog out
+% requires editing functions in Statistics and Machine Learning Toolbox 
+clear functions % clear the TMW funtions from memory
+cvp = cvpartition(DogID,'manual'); 
+
+RrF = SelectFeatures_DA_SVM(td, SensNames, Class, reliefVars, cvp);
+
+% save SelectedFeatures_DA_SVM RrF 
+
+%% Feature selection for Decision Tree
+% load SelectedFeatures_DA_SVM
+
+% Optimal MaxCut parameter to use in variable selection
+treecvOpL1 = Tree_optimizeMaxCutL1(td, SensNames, Class, reliefVars, cvp);
+
+% Variable selevtion using the optimized parameters
+RrFT = SelectFeatures_Tree(Xd, SensNames, Class, reliefVars, cvp, treecvOpL1);
+
+% Reoptimize MaxCut parameters for selected variables
+treecvOpL2 = Tree_optimizeMaxCutL2_selectedVars(Xd, SensNames, Class, cvp, reliefVars, RrFT);
+
+%% Classification
+
+% Discriminant classifiers
+Results_DA = ClassifyDogs_DA(td, SensNames, Class(1:20:end), reliefVars, cvp, RrF, DogID(1:20:end));
+
+% SVM classifier
+Results_SVM = ClassifyDogs_SVM(td, SensNames, Class(1:20:end), reliefVars, cvp, RrF, DogID(1:20:end));
+
+% Decision tree classifier
+Results_Tree = ClassifyDogs_Tree(td, SensNames, Class(1:20:end), reliefVars, cvp, RrFT, DogID(1:20:end), treecvOpL2);
+
+

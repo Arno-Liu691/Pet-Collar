@@ -1,0 +1,7 @@
+dataset,algorithm,rest_entry_s,first_accepted_hr_s,hr_latency_after_entry_s,first_valid_rr_s,rr_latency_after_entry_s
+stable,Baseline,12.0,46.0,34.0,52.0,40.0
+stable,V14,12.0,31.0,19.0,31.0,19.0
+rr_change,Baseline,12.0,46.0,34.0,52.0,40.0
+rr_change,V14,12.0,31.0,19.0,31.0,19.0
+disruption,Baseline,12.0,48.0,36.0,52.0,40.0
+disruption,V14,12.0,31.0,19.0,31.0,19.0

@@ -1,0 +1,7 @@
+segment,start_s,end_s,rows,rest_measurement_fraction,strong_motion_rows,moderate_motion_rows,hr_reportable_rows,rr_reportable_rows,hr_valid_rows,rr_valid_rows
+stable_before_sway,40,68,29,1.0,0,0,29,29,25,29
+low_amplitude_sway,69,100,32,1.0,0,0,32,17,4,13
+short_adjustment,141,146,6,1.0,0,4,1,1,0,0
+moderate_motion,156,159,4,1.0,0,4,0,0,0,0
+severe_motion,202,204,3,0.0,3,0,0,0,0,0
+post_reset,205,235,31,0.7419354838709677,0,0,4,4,4,4

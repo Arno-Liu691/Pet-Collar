@@ -1,0 +1,10 @@
+---
+type: quality annotation
+source file: Dog_13
+
+---
+
+Beginning	End		Class
+200.536		203.792		C
+231.414		235.304		C
+263.832		274.578		C

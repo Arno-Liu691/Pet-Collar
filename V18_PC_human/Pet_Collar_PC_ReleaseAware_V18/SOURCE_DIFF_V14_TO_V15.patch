@@ -1,0 +1,345 @@
+diff -ruN /mnt/data/Pet_Collar_PC_Improved_V14/algorithm/vital_estimator.c /tmp/Pet_Collar_PC_TrendAware_V15/algorithm/vital_estimator.c
+--- /mnt/data/Pet_Collar_PC_Improved_V14/algorithm/vital_estimator.c	2026-07-16 01:00:25.389016229 +0000
++++ /tmp/Pet_Collar_PC_TrendAware_V15/algorithm/vital_estimator.c	2026-07-16 01:30:09.582525641 +0000
+@@ -1,6 +1,6 @@
+ #include "vital_estimator.h"
+ 
+-/* Pet Collar PC Improved V14: validated on three human recordings. */
++/* Pet Collar PC Trend-Aware V15. */
+ #include <math.h>
+ #include <string.h>
+ 
+@@ -568,7 +568,7 @@
+             *pending_count = 1U;
+         }
+ 
+-        if ((*pending_count < pending_required) || (candidate_sqi < 62U))
++        if ((*pending_count < pending_required) || (candidate_sqi < VITAL_TRANSITION_CONFIRM_SQI_MIN))
+         {
+             target = track;
+         }
+@@ -725,6 +725,10 @@
+     uint8_t i;
+     float rr_quality;
+     float hr_quality;
++    uint8_t rr_switch_sqi = 0U;
++    uint8_t rr_transition_active = 0U;
++    uint8_t hr_switch_sqi = 0U;
++    uint8_t hr_transition_active = 0U;
+ 
+     if ((est == 0) || (out == 0)) return false;
+ 
+@@ -760,8 +764,10 @@
+     rr_cand.sqi = Vital_QualityToSqi(rr_quality);
+ 
+     {
+-        const uint8_t rr_switch_sqi =
++        const uint8_t rr_base_sqi = rr_cand.sqi;
++        rr_switch_sqi =
+             Vital_QualityToSqi(((float)rr_cand.transition_sqi / 100.0f) * est->motion_quality);
++
+         est->rr_track_bpm = Vital_UpdateTrack(est->rr_track_bpm,
+                                           rr_cand.bpm,
+                                           rr_switch_sqi,
+@@ -772,15 +778,27 @@
+                                           &est->rr_pending_count,
+                                           &est->rr_init_count,
+                                           1U);
+-    }
+ 
+-    /* SQI describes the final tracked output, not only the raw spectral peak.
+-     * During a pending/slew transition, reduce confidence in proportion to the
+-     * disagreement between the output and the current best candidate. */
+-    if (est->rr_track_bpm > 0.0f)
+-    {
+-        float agreement = Vital_ClampF(1.0f - Vital_AbsF(est->rr_track_bpm - rr_cand.bpm) / 8.0f, 0.25f, 1.0f);
+-        rr_cand.sqi = Vital_QualityToSqi(((float)rr_cand.sqi / 100.0f) * agreement);
++        rr_transition_active =
++            ((est->rr_pending_count >= VITAL_RR_PENDING_COUNT_REQUIRED) &&
++             (rr_switch_sqi >= VITAL_TRANSITION_CONFIRM_SQI_MIN)) ? 1U : 0U;
++
++        if (rr_transition_active != 0U)
++        {
++            float trend_q =
++                VITAL_TRANSITION_SQI_BLEND * ((float)rr_switch_sqi / 100.0f) +
++                (1.0f - VITAL_TRANSITION_SQI_BLEND) * ((float)rr_base_sqi / 100.0f);
++            rr_cand.sqi = Vital_QualityToSqi(trend_q);
++        }
++        else if (est->rr_track_bpm > 0.0f)
++        {
++            float agreement = Vital_ClampF(
++                1.0f - Vital_AbsF(est->rr_track_bpm - rr_cand.bpm) / 8.0f,
++                0.25f,
++                1.0f);
++            rr_cand.sqi =
++                Vital_QualityToSqi(((float)rr_base_sqi / 100.0f) * agreement);
++        }
+     }
+ 
+     out->rr_candidate_bpm = rr_cand.bpm;
+@@ -800,6 +818,34 @@
+     out->rr_valid = ((out->rr_bpm > 0.0f) &&
+                      (out->rr_sqi >= VITAL_RR_VALID_SQI_MIN) &&
+                      (out->rr_energy_low == 0U)) ? 1U : 0U;
++    out->rr_trend_active = rr_transition_active;
++
++    /* Reportability is intentionally separate from strict validity.
++     * A persistent, rate-limited transition remains visible, while a single
++     * unsupported candidate jump still cannot create an output. */
++    if ((est->motion_class >= VITAL_MOTION_MODERATE) ||
++        (out->rr_bpm <= 0.0f) ||
++        (out->rr_energy_low != 0U))
++    {
++        est->rr_report_hold_seconds = 0U;
++        out->rr_reportable = 0U;
++    }
++    else
++    {
++        if ((out->rr_valid != 0U) || (rr_transition_active != 0U))
++        {
++            est->rr_report_hold_seconds = VITAL_REPORT_HOLD_SEC;
++        }
++        else if (est->rr_report_hold_seconds > 0U)
++        {
++            est->rr_report_hold_seconds--;
++        }
++
++        out->rr_reportable =
++            ((out->rr_valid != 0U) ||
++             (rr_transition_active != 0U) ||
++             (est->rr_report_hold_seconds > 0U)) ? 1U : 0U;
++    }
+ 
+     hr_search = Vital_SearchBand(est,
+                                  VITAL_HR_WINDOW_SAMPLES,
+@@ -817,21 +863,42 @@
+     hr_quality = ((float)hr_cand.sqi / 100.0f) * est->motion_quality;
+     hr_cand.sqi = Vital_QualityToSqi(hr_quality);
+ 
+-    est->hr_track_bpm = Vital_UpdateTrack(est->hr_track_bpm,
+-                                          hr_cand.bpm,
+-                                          hr_cand.sqi,
+-                                          VITAL_HR_SWITCH_DELTA_BPM,
+-                                          VITAL_HR_PENDING_COUNT_REQUIRED,
+-                                          VITAL_HR_MAX_STEP_BPM_PER_EST,
+-                                          &est->hr_pending_bpm,
+-                                          &est->hr_pending_count,
+-                                          &est->hr_init_count,
+-                                          0U);
+-
+-    if (est->hr_track_bpm > 0.0f)
+     {
+-        float agreement = Vital_ClampF(1.0f - Vital_AbsF(est->hr_track_bpm - hr_cand.bpm) / 18.0f, 0.20f, 1.0f);
+-        hr_cand.sqi = Vital_QualityToSqi(((float)hr_cand.sqi / 100.0f) * agreement);
++        const uint8_t hr_base_sqi = hr_cand.sqi;
++        hr_switch_sqi =
++            Vital_QualityToSqi(((float)hr_cand.transition_sqi / 100.0f) * est->motion_quality);
++
++        est->hr_track_bpm = Vital_UpdateTrack(est->hr_track_bpm,
++                                              hr_cand.bpm,
++                                              hr_switch_sqi,
++                                              VITAL_HR_SWITCH_DELTA_BPM,
++                                              VITAL_HR_PENDING_COUNT_REQUIRED,
++                                              VITAL_HR_MAX_STEP_BPM_PER_EST,
++                                              &est->hr_pending_bpm,
++                                              &est->hr_pending_count,
++                                              &est->hr_init_count,
++                                              0U);
++
++        hr_transition_active =
++            ((est->hr_pending_count >= VITAL_HR_PENDING_COUNT_REQUIRED) &&
++             (hr_switch_sqi >= VITAL_TRANSITION_CONFIRM_SQI_MIN)) ? 1U : 0U;
++
++        if (hr_transition_active != 0U)
++        {
++            float trend_q =
++                VITAL_TRANSITION_SQI_BLEND * ((float)hr_switch_sqi / 100.0f) +
++                (1.0f - VITAL_TRANSITION_SQI_BLEND) * ((float)hr_base_sqi / 100.0f);
++            hr_cand.sqi = Vital_QualityToSqi(trend_q);
++        }
++        else if (est->hr_track_bpm > 0.0f)
++        {
++            float agreement = Vital_ClampF(
++                1.0f - Vital_AbsF(est->hr_track_bpm - hr_cand.bpm) / 18.0f,
++                0.20f,
++                1.0f);
++            hr_cand.sqi =
++                Vital_QualityToSqi(((float)hr_base_sqi / 100.0f) * agreement);
++        }
+     }
+ 
+     out->hr_candidate_bpm = hr_cand.bpm;
+@@ -862,24 +929,48 @@
+         }
+     }
+ 
+-    if ((out->hr_bpm > 0.0f) && (out->hr_sqi >= VITAL_HR_VALID_SQI_MIN))
++    out->hr_trend_active = hr_transition_active;
++
++    if ((est->motion_class >= VITAL_MOTION_MODERATE) && (out->hr_bpm > 0.0f))
+     {
++        est->hr_report_hold_seconds = 0U;
++        out->hr_valid = 0U;
++        out->hr_reportable = 0U;
++        out->hr_status = VITAL_HR_STATUS_CONTAM;
++    }
++    else if ((out->hr_bpm > 0.0f) && (out->hr_sqi >= VITAL_HR_VALID_SQI_MIN))
++    {
++        est->hr_report_hold_seconds = VITAL_REPORT_HOLD_SEC;
+         out->hr_valid = 1U;
++        out->hr_reportable = 1U;
+         out->hr_status = VITAL_HR_STATUS_VALID;
+     }
+     else if ((out->hr_bpm > 0.0f) && (out->hr_sqi >= VITAL_HR_VALID_LOW_SQI_MIN))
+     {
++        est->hr_report_hold_seconds = VITAL_REPORT_HOLD_SEC;
+         out->hr_valid = 0U;
++        out->hr_reportable = 1U;
+         out->hr_status = VITAL_HR_STATUS_VALID_LOW;
+     }
+-    else if ((est->motion_class >= VITAL_MOTION_MODERATE) && (out->hr_bpm > 0.0f))
++    else if ((out->hr_bpm > 0.0f) && (hr_transition_active != 0U))
+     {
++        est->hr_report_hold_seconds = VITAL_REPORT_HOLD_SEC;
+         out->hr_valid = 0U;
+-        out->hr_status = VITAL_HR_STATUS_CONTAM;
++        out->hr_reportable = 1U;
++        out->hr_status = VITAL_HR_STATUS_TREND;
++    }
++    else if ((out->hr_bpm > 0.0f) && (est->hr_report_hold_seconds > 0U))
++    {
++        est->hr_report_hold_seconds--;
++        out->hr_valid = 0U;
++        out->hr_reportable = 1U;
++        out->hr_status = VITAL_HR_STATUS_TREND;
+     }
+     else
+     {
++        est->hr_report_hold_seconds = 0U;
+         out->hr_valid = 0U;
++        out->hr_reportable = 0U;
+         out->hr_status = VITAL_HR_STATUS_NONE;
+     }
+ 
+@@ -905,6 +996,7 @@
+         case VITAL_HR_STATUS_VALID: return "VALID";
+         case VITAL_HR_STATUS_VALID_LOW: return "VALID_LOW";
+         case VITAL_HR_STATUS_CONTAM: return "CONTAM";
++        case VITAL_HR_STATUS_TREND: return "TREND";
+         default: return "----";
+     }
+ }
+diff -ruN /mnt/data/Pet_Collar_PC_Improved_V14/algorithm/vital_estimator.h /tmp/Pet_Collar_PC_TrendAware_V15/algorithm/vital_estimator.h
+--- /mnt/data/Pet_Collar_PC_Improved_V14/algorithm/vital_estimator.h	2026-07-16 01:05:06.690335206 +0000
++++ /tmp/Pet_Collar_PC_TrendAware_V15/algorithm/vital_estimator.h	2026-07-16 01:30:09.580817249 +0000
+@@ -6,7 +6,7 @@
+ #include "rest_detector.h"
+ 
+ /* ============================================================
+- * Vital estimator configuration - V14 cross-dataset candidate
++ * Vital estimator configuration - V15 trend-aware candidate
+  * ============================================================
+  * - 100 Hz input, decimated by 4 to 25 Hz.
+  * - 18 s HR window and 10 s RR window to reduce latency.
+@@ -62,11 +62,14 @@
+ #define VITAL_RR_MAX_STEP_BPM_PER_EST     2.00f
+ #define VITAL_HR_SWITCH_DELTA_BPM         8.00f
+ #define VITAL_RR_SWITCH_DELTA_BPM         4.0f
+-#define VITAL_HR_PENDING_COUNT_REQUIRED   4U
++#define VITAL_HR_PENDING_COUNT_REQUIRED   3U
+ #define VITAL_RR_PENDING_COUNT_REQUIRED   2U
+ #define VITAL_TRACK_INIT_COUNT_REQUIRED   2U
+ #define VITAL_MOTION_RECOVERY_HOLD_SEC     10U
+ #define VITAL_SWITCH_QUALITY_SCALE         1.00f
++#define VITAL_TRANSITION_SQI_BLEND          0.85f
++#define VITAL_TRANSITION_CONFIRM_SQI_MIN    62U
++#define VITAL_REPORT_HOLD_SEC                4U
+ 
+ typedef enum
+ {
+@@ -81,7 +84,8 @@
+     VITAL_HR_STATUS_NONE = 0,
+     VITAL_HR_STATUS_VALID = 1,
+     VITAL_HR_STATUS_CONTAM = 2,
+-    VITAL_HR_STATUS_VALID_LOW = 3
++    VITAL_HR_STATUS_VALID_LOW = 3,
++    VITAL_HR_STATUS_TREND = 4
+ } VitalHrStatus_t;
+ 
+ typedef enum
+@@ -98,7 +102,12 @@
+     float hr_bpm;
+ 
+     uint8_t rr_valid;
++    uint8_t rr_reportable;
++    uint8_t rr_trend_active;
++
+     uint8_t hr_valid;
++    uint8_t hr_reportable;
++    uint8_t hr_trend_active;
+     VitalHrStatus_t hr_status;
+ 
+     uint8_t rr_sqi;
+@@ -183,6 +192,9 @@
+     VitalMotionClass_t motion_class;
+     uint8_t motion_hold_seconds;
+ 
++    uint8_t rr_report_hold_seconds;
++    uint8_t hr_report_hold_seconds;
++
+     VitalOutput_t last_output;
+ } VitalEstimator_t;
+ 
+--- /mnt/data/Pet_Collar_PC_Improved_V14/src/main_pc.c	2026-07-16 01:00:23.552749533 +0000
++++ /tmp/Pet_Collar_PC_TrendAware_V15/src/main_pc.c	2026-07-16 01:30:09.583551050 +0000
+@@ -53,8 +53,8 @@
+             "acc_jerk_rms,acc_jerk_p95,"
+             "entered_measurement,left_measurement,vital_reset_since_previous_second,"
+             "vital_estimate_called,vital_estimate_returned,vital_stored_samples,vital_fill_percent,"
+-            "rr_valid,rr_bpm,rr_raw_bpm,rr_alt_bpm,rr_correction,rr_energy_low,rr_sqi,rr_snr,rr_axis,rr_peak_freq_hz,"
+-            "hr_status,hr_valid,hr_bpm,hr_tracked_bpm,hr_sqi,hr_snr,hr_axis,"
++            "rr_valid,rr_reportable,rr_trend_active,rr_bpm,rr_raw_bpm,rr_alt_bpm,rr_correction,rr_energy_low,rr_sqi,rr_snr,rr_axis,rr_peak_freq_hz,"
++            "hr_status,hr_valid,hr_reportable,hr_trend_active,hr_bpm,hr_tracked_bpm,hr_sqi,hr_snr,hr_axis,"
+             "hr_raw_bpm,hr_raw_snr,hr_clean_bpm,hr_clean_snr,hr_near_harmonic,hr_harmonic_k,"
+             "hr_cand1_bpm,hr_cand1_snr,hr_cand1_harm_k,"
+             "hr_cand2_bpm,hr_cand2_snr,hr_cand2_harm_k,"
+@@ -122,14 +122,16 @@
+     if (vital_estimate_called)
+     {
+         fprintf(out,
+-                "%u,%.6f,%.6f,%.6f,%s,%u,%u,%.9g,%s,%.9g,"
+-                "%s,%u,%.6f,%.6f,%u,%.9g,%s,"
++                "%u,%u,%u,%.6f,%.6f,%.6f,%s,%u,%u,%.9g,%s,%.9g,"
++                "%s,%u,%u,%u,%.6f,%.6f,%u,%.9g,%s,"
+                 "%.6f,%.9g,%.6f,%.9g,%u,%u,"
+                 "%.6f,%.9g,%u,%.6f,%.9g,%u,%.6f,%.9g,%u,"
+                 "%.6f,%s,"
+                 "%.6f,%.6f,%.6f,%.6f,%.6f,"
+                 "%.6f,%.6f,%.6f,%.6f,%.6f\n",
+                 (unsigned int)vital_out->rr_valid,
++                (unsigned int)vital_out->rr_reportable,
++                (unsigned int)vital_out->rr_trend_active,
+                 vital_out->rr_bpm,
+                 vital_out->rr_raw_bpm,
+                 vital_out->rr_alt_bpm,
+@@ -141,6 +143,8 @@
+                 vital_out->rr_peak_freq_hz,
+                 VitalEstimator_HrStatusToString(vital_out->hr_status),
+                 (unsigned int)vital_out->hr_valid,
++                (unsigned int)vital_out->hr_reportable,
++                (unsigned int)vital_out->hr_trend_active,
+                 vital_out->hr_bpm,
+                 vital_out->hr_tracked_bpm,
+                 (unsigned int)vital_out->hr_sqi,
+@@ -170,9 +174,9 @@
+     }
+     else
+     {
+-        /* 43 empty vital-result fields. The preceding section already wrote
++        /* 47 empty vital-result fields. The preceding section already wrote
+          * the comma after the last non-vital field, so emit 42 more commas. */
+-        for (unsigned int i = 0U; i < 42U; i++)
++        for (unsigned int i = 0U; i < 46U; i++)
+         {
+             fputc(',', out);
+         }
