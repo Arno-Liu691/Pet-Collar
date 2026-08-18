@@ -1,8 +1,0 @@
----
-type: quality annotation
-source file: Rabbit_01_part_1
-
----
-
-Beginning	End		Class
-707.223		709.437		C

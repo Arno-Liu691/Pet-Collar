@@ -1,9 +1,0 @@
----
-type: quality annotation
-source file: Dog_17
-
----
-
-Beginning	End		Class
-7.734		14.454		C
-136.864		151.978		C

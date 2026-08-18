@@ -1,8 +1,0 @@
----
-type: quality annotation
-source file: Mouse_04
-
----
-
-Beginning	End		Class
-808.447		809.735		C
